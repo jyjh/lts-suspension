@@ -28,8 +28,10 @@ mgr = managerFixture();
 corners = {mgr.frontLeft, mgr.frontRight, mgr.rearLeft, mgr.rearRight};
 names = {'FL', 'FR', 'RL', 'RR'};
 for i = 1:4
-    verifyTrue(testCase, ~isempty(corners{i}), 'corner %s missing', names{i});
-    verifyTrue(testCase, isfinite(corners{i}.springRate));
+    verifyTrue(testCase, ~isempty(corners{i}), ...
+        sprintf('corner %s missing', names{i}));
+    verifyTrue(testCase, isfinite(corners{i}.springRate), ...
+        sprintf('corner %s springRate not finite', names{i}));
     verifyGreaterThan(testCase, corners{i}.springRate, 0);
 end
 end
