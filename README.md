@@ -41,4 +41,10 @@ The runner assembles a temporary `+lts` package sandbox in `build/`
   `getAxleRollStiffness`; the suspension probes for
   `getFrontRollAngle`/`getRearRollAngle` on an optional linked chassis.
   Neither package requires the other on the MATLAB path.
+- `tests/ConformanceTest.m` pins the `cfg.suspension` schema
+  (`validateConfig`), the `SuspensionComponent` interface, and the
+  `SuspensionState`/corner property names feeding the per-corner
+  telemetry channels (`damperPos_FL`, `Fz_FL`, ...). Renaming any of
+  them is a **contract change** — see "Changing the contract" on the
+  [Contracts page](https://jyjh.github.io/lts/contracts/).
 - Details: <https://jyjh.github.io/lts/repo-split/>
