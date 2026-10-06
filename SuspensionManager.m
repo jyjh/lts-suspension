@@ -319,20 +319,30 @@ classdef SuspensionManager < lts.components.Suspension.SuspensionComponent
                     'RR', disp.RR + vel.RR * predictDt);
             end
 
-            % ARB coupling forces per axle (differential rate from the bar
-            % objects).
-            arb = obj.getAntiRollBarForces();
-
-            % Drive each corner from the chassis-imposed sprung motion. The
-            % suspension advances its unsprung mass against the tire spring.
-            obj.frontLeft.updateCornerFromChassis( ...
-                obj.frontLeft.state, disp.FL, vel.FL, dt, arb.FL);
-            obj.frontRight.updateCornerFromChassis( ...
-                obj.frontRight.state, disp.FR, vel.FR, dt, arb.FR);
-            obj.rearLeft.updateCornerFromChassis( ...
-                obj.rearLeft.state, disp.RL, vel.RL, dt, arb.RL);
-            obj.rearRight.updateCornerFromChassis( ...
-                obj.rearRight.state, disp.RR, vel.RR, dt, arb.RR);
+            % Both wheels must advance on the same clock. Independent
+            % corner substeps would hold the connecting bar force stale.
+            units = {obj.frontLeft, obj.frontRight, obj.rearLeft, obj.rearRight};
+            names = {'FL', 'FR', 'RL', 'RR'};
+            startDisp = zeros(1, 4);
+            startVel = zeros(1, 4);
+            targetDisp = zeros(1, 4);
+            targetVel = zeros(1, 4);
+            for idx = 1:4
+                startDisp(idx) = units{idx}.state.sprungPosition;
+                startVel(idx) = units{idx}.state.sprungVelocity;
+                targetDisp(idx) = disp.(names{idx});
+                targetVel(idx) = vel.(names{idx});
+            end
+            n = max(1, ceil(dt / obj.getMaxIntegrationStep()));
+            for idx = 1:n
+                blend = idx / n;
+                subDisp = startDisp + blend * (targetDisp - startDisp);
+                subVel = startVel + blend * (targetVel - startVel);
+                obj.advanceAxle(obj.frontLeft, obj.frontRight, ...
+                    subDisp(1:2), subVel(1:2), dt / n, obj.frontAntiRollBarWheelRate);
+                obj.advanceAxle(obj.rearLeft, obj.rearRight, ...
+                    subDisp(3:4), subVel(3:4), dt / n, obj.rearAntiRollBarWheelRate);
+            end
             obj.updateGeometry(steer);
 
             loads.FL = obj.frontLeft.state.tireNormalForce;
@@ -352,16 +362,10 @@ classdef SuspensionManager < lts.components.Suspension.SuspensionComponent
             chassis.computeCornerKinematics();
             disp = chassis.state.cornerDisplacement;
             vel = chassis.state.cornerVelocity;
-            arb = obj.getAntiRollBarForces();
-
-            obj.frontLeft.initializeCornerFromChassis( ...
-                obj.frontLeft.state, disp.FL, vel.FL, arb.FL);
-            obj.frontRight.initializeCornerFromChassis( ...
-                obj.frontRight.state, disp.FR, vel.FR, arb.FR);
-            obj.rearLeft.initializeCornerFromChassis( ...
-                obj.rearLeft.state, disp.RL, vel.RL, arb.RL);
-            obj.rearRight.initializeCornerFromChassis( ...
-                obj.rearRight.state, disp.RR, vel.RR, arb.RR);
+            obj.initializeAxle(obj.frontLeft, obj.frontRight, ...
+                [disp.FL, disp.FR], [vel.FL, vel.FR], obj.frontAntiRollBarWheelRate);
+            obj.initializeAxle(obj.rearLeft, obj.rearRight, ...
+                [disp.RL, disp.RR], [vel.RL, vel.RR], obj.rearAntiRollBarWheelRate);
             obj.updateGeometry(steer);
 
             loads.FL = obj.frontLeft.state.tireNormalForce;
@@ -416,6 +420,24 @@ classdef SuspensionManager < lts.components.Suspension.SuspensionComponent
                 if tot > eps
                     frac = fF / tot;
                 end
+            end
+        end
+
+        function maxStep = getMaxIntegrationStep(obj)
+            % Bound the coupled anti-phase wheel-hop mode. A Gershgorin
+            % bound adds 2*B to each diagonal spring/tire stiffness; the
+            % single-corner limit alone omits this mode entirely.
+            units = {obj.frontLeft, obj.frontRight, obj.rearLeft, obj.rearRight};
+            rates = [obj.frontAntiRollBarWheelRate, obj.frontAntiRollBarWheelRate, ...
+                obj.rearAntiRollBarWheelRate, obj.rearAntiRollBarWheelRate];
+            maxStep = 0.001;
+            for idx = 1:4
+                unit = units{idx};
+                mr = max(unit.state.motionRatioEffective, eps);
+                stiffness = unit.springRate * mr^2 + unit.tireSpringRate + ...
+                    max(unit.bumpStopRate, 0) + 2 * rates(idx);
+                maxStep = min([maxStep, unit.maxIntegrationStep, ...
+                    0.3 * sqrt(unit.unsprungMass / stiffness)]);
             end
         end
 
@@ -554,6 +576,69 @@ classdef SuspensionManager < lts.components.Suspension.SuspensionComponent
     end
 
     methods (Access = private)
+        function advanceAxle(~, left, right, disp, vel, dt, rate)
+            % Evaluate both bar ends from the same imposed body position and
+            % pre-step wheel positions, then refresh the endpoint reactions.
+            force = rate * ((disp(2) - right.state.unsprungPosition) - ...
+                (disp(1) - left.state.unsprungPosition));
+            left.updateCornerFromChassis(left.state, disp(1), vel(1), dt, -force);
+            right.updateCornerFromChassis(right.state, disp(2), vel(2), dt, force);
+            endForce = rate * (right.state.damperPosition - left.state.damperPosition);
+            states = {left.state, right.state};
+            values = [-endForce, endForce];
+            for idx = 1:2
+                state = states{idx};
+                delta = values(idx) - state.antiRollBarForce;
+                state.suspensionForce = state.suspensionForce + delta;
+                state.demandedLoad = state.demandedLoad + delta;
+                state.antiRollBarForce = values(idx);
+            end
+        end
+
+        function initializeAxle(obj, left, right, disp, vel, rate)
+            if rate == 0
+                obj.axleEquilibriumResidual(left, right, disp, vel, rate, 0);
+                return;
+            end
+            % Solve in the shared bar force, not by fixed-point travel
+            % iteration, which diverges when B exceeds the tire rate. Each
+            % residual evaluation equilibrates both tire/spring corners.
+            bound = max(1, rate * abs(disp(2) - disp(1)));
+            for idx = 1:60
+                lower = -bound;
+                upper = bound;
+                fLower = obj.axleEquilibriumResidual(left, right, disp, vel, rate, lower);
+                fUpper = obj.axleEquilibriumResidual(left, right, disp, vel, rate, upper);
+                if fLower <= 0 && fUpper >= 0
+                    break;
+                end
+                bound = 2 * bound;
+            end
+            if fLower > 0 || fUpper < 0
+                error('lts_suspension_SuspensionManager:EquilibriumNotBracketed', ...
+                    'Cannot bracket the coupled axle equilibrium.');
+            end
+            for idx = 1:80
+                force = (lower + upper) / 2;
+                residual = obj.axleEquilibriumResidual(left, right, disp, vel, rate, force);
+                if abs(residual) < 1e-8
+                    return;
+                elseif residual < 0
+                    lower = force;
+                else
+                    upper = force;
+                end
+            end
+            error('lts_suspension_SuspensionManager:EquilibriumNotConverged', ...
+                'Coupled axle equilibrium did not converge.');
+        end
+
+        function residual = axleEquilibriumResidual(~, left, right, disp, vel, rate, force)
+            left.initializeCornerFromChassis(left.state, disp(1), vel(1), -force);
+            right.initializeCornerFromChassis(right.state, disp(2), vel(2), force);
+            residual = force - rate * (right.state.damperPosition - left.state.damperPosition);
+        end
+
         function loads = applyChassisGeometricTransfer(obj, loads, chassis)
             geometricTransfer = obj.readChassisGeometricTransfer(chassis);
             additionalTransfer = obj.readChassisAdditionalTransfer(chassis);
