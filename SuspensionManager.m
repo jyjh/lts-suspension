@@ -85,6 +85,10 @@ classdef SuspensionManager < lts.components.Suspension.SuspensionComponent
         % Empty until the chassis API is first queried.
         cachedChassisHasCornerKinematics
     end
+
+    properties (Access = private, Transient)
+        calculationCache = lts.components.Suspension.SuspensionCalculationCache()
+    end
     
     methods
         function obj = SuspensionManager(vehicleManager, ...
@@ -430,15 +434,28 @@ classdef SuspensionManager < lts.components.Suspension.SuspensionComponent
             units = {obj.frontLeft, obj.frontRight, obj.rearLeft, obj.rearRight};
             rates = [obj.frontAntiRollBarWheelRate, obj.frontAntiRollBarWheelRate, ...
                 obj.rearAntiRollBarWheelRate, obj.rearAntiRollBarWheelRate];
-            maxStep = 0.001;
+            inputs = zeros(4, 7);
             for idx = 1:4
                 unit = units{idx};
-                mr = max(unit.state.motionRatioEffective, eps);
-                stiffness = unit.springRate * mr^2 + unit.tireSpringRate + ...
-                    max(unit.bumpStopRate, 0) + 2 * rates(idx);
-                maxStep = min([maxStep, unit.maxIntegrationStep, ...
-                    0.3 * sqrt(unit.unsprungMass / stiffness)]);
+                inputs(idx, :) = [unit.springRate, unit.tireSpringRate, ...
+                    unit.bumpStopRate, rates(idx), unit.state.motionRatioEffective, ...
+                    unit.unsprungMass, unit.maxIntegrationStep];
             end
+            cache = obj.calculationCache;
+            if isequal(inputs, cache.boundInputs)
+                maxStep = cache.boundStep;
+                return;
+            end
+            maxStep = 0.001;
+            for idx = 1:4
+                mr = max(inputs(idx, 5), eps);
+                stiffness = inputs(idx, 1) * mr^2 + inputs(idx, 2) + ...
+                    max(inputs(idx, 3), 0) + 2 * inputs(idx, 4);
+                maxStep = min([maxStep, inputs(idx, 7), ...
+                    0.3 * sqrt(inputs(idx, 6) / stiffness)]);
+            end
+            cache.boundInputs = inputs;
+            cache.boundStep = maxStep;
         end
 
         function [KwF, KwR] = getAxleRollStiffness(obj)
@@ -687,17 +704,16 @@ classdef SuspensionManager < lts.components.Suspension.SuspensionComponent
             rearLoad = rearLoad + actualTransfer;
         end
 
-        function transfer = readChassisGeometricTransfer(~, chassis)
+        function transfer = readChassisGeometricTransfer(obj, chassis)
             transfer = struct('front', 0, 'rear', 0);
-            if isempty(chassis) || ~isprop(chassis, 'state') || isempty(chassis.state)
+            [state, caps] = obj.chassisStateCapabilities(chassis);
+            if isempty(state)
                 return;
             end
-
-            state = chassis.state;
-            if isprop(state, 'frontGeometricLateralLoadTransfer')
+            if caps.frontGeometricLateralLoadTransfer
                 transfer.front = state.frontGeometricLateralLoadTransfer;
             end
-            if isprop(state, 'rearGeometricLateralLoadTransfer')
+            if caps.rearGeometricLateralLoadTransfer
                 transfer.rear = state.rearGeometricLateralLoadTransfer;
             end
             if ~isfinite(transfer.front)
@@ -708,21 +724,20 @@ classdef SuspensionManager < lts.components.Suspension.SuspensionComponent
             end
         end
 
-        function transfer = readChassisAdditionalTransfer(~, chassis)
+        function transfer = readChassisAdditionalTransfer(obj, chassis)
             transfer = struct('longitudinal', 0, ...
                 'frontLateral', 0, 'rearLateral', 0);
-            if isempty(chassis) || ~isprop(chassis, 'state') || isempty(chassis.state)
+            [state, caps] = obj.chassisStateCapabilities(chassis);
+            if isempty(state)
                 return;
             end
-
-            state = chassis.state;
-            if isprop(state, 'additionalLongitudinalLoadTransfer')
+            if caps.additionalLongitudinalLoadTransfer
                 transfer.longitudinal = state.additionalLongitudinalLoadTransfer;
             end
-            if isprop(state, 'frontAdditionalLateralLoadTransfer')
+            if caps.frontAdditionalLateralLoadTransfer
                 transfer.frontLateral = state.frontAdditionalLateralLoadTransfer;
             end
-            if isprop(state, 'rearAdditionalLateralLoadTransfer')
+            if caps.rearAdditionalLateralLoadTransfer
                 transfer.rearLateral = state.rearAdditionalLateralLoadTransfer;
             end
             names = fieldnames(transfer);
@@ -776,14 +791,11 @@ classdef SuspensionManager < lts.components.Suspension.SuspensionComponent
 
         function rollAngle = readChassisRollAngle(obj, cornerName)
             rollAngle = 0;
-            if isempty(obj.chassis) || ~isprop(obj.chassis, 'state') || ...
-                    isempty(obj.chassis.state)
+            [state, caps] = obj.chassisStateCapabilities(obj.chassis);
+            if isempty(state)
                 return;
             end
-
-            state = obj.chassis.state;
-            hasSplitRoll = isprop(state, 'frontRollAngle') && ...
-                isprop(state, 'rearRollAngle');
+            hasSplitRoll = caps.frontRollAngle && caps.rearRollAngle;
             if hasSplitRoll
                 if startsWith(upper(cornerName), 'F')
                     rollAngle = state.frontRollAngle;
@@ -794,15 +806,44 @@ classdef SuspensionManager < lts.components.Suspension.SuspensionComponent
                 % Preserve compatibility with initializers that populate
                 % only the legacy whole-car roll state.
                 if state.frontRollAngle == 0 && state.rearRollAngle == 0 && ...
-                        isprop(state, 'rollAngle') && state.rollAngle ~= 0
+                        caps.rollAngle && state.rollAngle ~= 0
                     rollAngle = state.rollAngle;
                 end
-            elseif isprop(state, 'rollAngle')
+            elseif caps.rollAngle
                 rollAngle = state.rollAngle;
             end
 
             if ~isfinite(rollAngle)
                 rollAngle = 0;
+            end
+        end
+
+        function [state, caps] = chassisStateCapabilities(obj, chassis)
+            state = [];
+            caps = struct();
+            if isempty(chassis), return; end
+            cache = obj.calculationCache;
+            chassisClass = class(chassis);
+            if ~strcmp(chassisClass, cache.chassisClass) || isa(chassis, 'dynamicprops')
+                cache.hasChassisState = isprop(chassis, 'state');
+                cache.chassisClass = chassisClass;
+            end
+            if ~cache.hasChassisState, return; end
+            state = chassis.state;
+            if isempty(state), return; end
+            stateClass = class(state);
+            if ~strcmp(stateClass, cache.stateClass) || isa(state, 'dynamicprops')
+                names = {'frontRollAngle', 'rearRollAngle', 'rollAngle', ...
+                    'frontGeometricLateralLoadTransfer', 'rearGeometricLateralLoadTransfer', ...
+                    'additionalLongitudinalLoadTransfer', ...
+                    'frontAdditionalLateralLoadTransfer', 'rearAdditionalLateralLoadTransfer'};
+                for idx = 1:numel(names)
+                    caps.(names{idx}) = isprop(state, names{idx});
+                end
+                cache.stateClass = stateClass;
+                cache.stateCapabilities = caps;
+            else
+                caps = cache.stateCapabilities;
             end
         end
 
