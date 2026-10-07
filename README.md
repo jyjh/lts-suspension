@@ -69,9 +69,9 @@ The optional `getMaxIntegrationStep()` capability bounds the anti-phase mode
 including `2*B`; vehicle callers should subcycle the complete chassis/suspension
 loop at this bound rather than advancing the chassis with frozen reactions.
 
-The integration bound is memoized against every corner stiffness, effective
-motion ratio, unsprung mass, integration cap, and axle bar rate. Changing any
-input recomputes it. Chassis-state capabilities are cached by class, with live
-reflection for dynamic properties; state values and bar forces remain live.
+Chassis-state capabilities are cached by class, with live reflection for
+dynamic properties. State values, bar forces, and integration bounds remain
+live; the bound responds immediately to stiffness, effective motion ratio,
+unsprung mass, integration cap, and axle bar-rate changes.
 Private transient handle caches support the manager's value-class semantics
 without retaining component handles or sharing physical state between copies.

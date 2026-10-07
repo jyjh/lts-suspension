@@ -434,28 +434,15 @@ classdef SuspensionManager < lts.components.Suspension.SuspensionComponent
             units = {obj.frontLeft, obj.frontRight, obj.rearLeft, obj.rearRight};
             rates = [obj.frontAntiRollBarWheelRate, obj.frontAntiRollBarWheelRate, ...
                 obj.rearAntiRollBarWheelRate, obj.rearAntiRollBarWheelRate];
-            inputs = zeros(4, 7);
-            for idx = 1:4
-                unit = units{idx};
-                inputs(idx, :) = [unit.springRate, unit.tireSpringRate, ...
-                    unit.bumpStopRate, rates(idx), unit.state.motionRatioEffective, ...
-                    unit.unsprungMass, unit.maxIntegrationStep];
-            end
-            cache = obj.calculationCache;
-            if isequal(inputs, cache.boundInputs)
-                maxStep = cache.boundStep;
-                return;
-            end
             maxStep = 0.001;
             for idx = 1:4
-                mr = max(inputs(idx, 5), eps);
-                stiffness = inputs(idx, 1) * mr^2 + inputs(idx, 2) + ...
-                    max(inputs(idx, 3), 0) + 2 * inputs(idx, 4);
-                maxStep = min([maxStep, inputs(idx, 7), ...
-                    0.3 * sqrt(inputs(idx, 6) / stiffness)]);
+                unit = units{idx};
+                mr = max(unit.state.motionRatioEffective, eps);
+                stiffness = unit.springRate * mr^2 + unit.tireSpringRate + ...
+                    max(unit.bumpStopRate, 0) + 2 * rates(idx);
+                maxStep = min([maxStep, unit.maxIntegrationStep, ...
+                    0.3 * sqrt(unit.unsprungMass / stiffness)]);
             end
-            cache.boundInputs = inputs;
-            cache.boundStep = maxStep;
         end
 
         function [KwF, KwR] = getAxleRollStiffness(obj)

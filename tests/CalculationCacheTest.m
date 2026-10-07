@@ -10,34 +10,6 @@ s = lts.components.Suspension.SuspensionManager(vm, ...
 s.warmup(vm.totalMass,.001);
 end
 
-function testBoundInvalidatesForEveryPhysicalInput(testCase)
-s = fixture();
-verifyEqual(testCase,s.getMaxIntegrationStep(),s.getMaxIntegrationStep());
-% Isolate one corner as the controlling mode, then change each independent
-% stiffness/mass input. A stale bound can silently skip necessary substeps.
-s.frontRight.unsprungMass = 100;
-s.rearLeft.unsprungMass = 100;
-s.rearRight.unsprungMass = 100;
-base = s.getMaxIntegrationStep();
-for field = {'springRate','tireSpringRate','bumpStopRate'}
-    unit = s.frontLeft;
-    old = unit.(field{1});
-    unit.(field{1}) = old * 2;
-    copy = s;
-    copy.frontLeft = unit;
-    verifyLessThan(testCase,copy.getMaxIntegrationStep(),base);
-    verifyEqual(testCase,s.getMaxIntegrationStep(),base);
-end
-copy = s; copy.frontAntiRollBarWheelRate = 4e6;
-verifyLessThan(testCase,copy.getMaxIntegrationStep(),base);
-copy = s; copy.frontLeft.unsprungMass = 4.5;
-verifyLessThan(testCase,copy.getMaxIntegrationStep(),base);
-copy = s; copy.frontLeft.maxIntegrationStep = base / 2;
-verifyEqual(testCase,copy.getMaxIntegrationStep(),base / 2);
-s.frontLeft.state.motionRatioEffective = 2;
-verifyLessThan(testCase,s.getMaxIntegrationStep(),base);
-end
-
 function testCapabilitiesKeepLiveValuesAndReplacementState(testCase)
 s = fixture(); c = PrescribedChassis(); c.state = CacheChassisStateSpy();
 s.chassis = c;
@@ -70,10 +42,13 @@ verifyEqual(testCase,loads.FR-loads.FL,0,'AbsTol',1e-10);
 end
 
 function testTransientCacheReloadsWithValueModel(testCase)
-s = fixture(); s.getMaxIntegrationStep();
+s = fixture(); c = PrescribedChassis(); c.state = CacheChassisStateSpy();
+s.chassis = c; c.state.frontAdditionalLateralLoadTransfer = 10;
+s.computeCornerLoadsFromChassis(c,0,0);
 file = [tempname,'.mat']; cleanup = onCleanup(@() delete(file)); %#ok<NASGU>
 save(file,'s'); saved = load(file,'s');
-verifyEqual(testCase,saved.s.getMaxIntegrationStep(),s.getMaxIntegrationStep());
-saved.s.frontAntiRollBarWheelRate = 4e6;
-verifyLessThan(testCase,saved.s.getMaxIntegrationStep(),s.getMaxIntegrationStep());
+saved.s.chassis.state.frontAdditionalLateralLoadTransfer = 35;
+loads = saved.s.computeCornerLoadsFromChassis(saved.s.chassis,0,0);
+verifyEqual(testCase,loads.FR-loads.FL,70,'AbsTol',1e-10);
+verifyEqual(testCase,c.state.frontAdditionalLateralLoadTransfer,10);
 end
