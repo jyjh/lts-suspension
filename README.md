@@ -48,3 +48,30 @@ The runner assembles a temporary `+lts` package sandbox in `build/`
   them is a **contract change** — see "Changing the contract" on the
   [Contracts page](https://jyjh.github.io/lts/contracts/).
 - Details: <https://jyjh.github.io/lts/repo-split/>
+
+## Anti-roll-bar force and integration
+
+The bar's differential wheel rate is `B = stiffness * motionRatio^2 /
+leverArm^2`. Both wheel reactions use the same suspension-travel difference;
+the equivalent axle roll stiffness is `B * trackWidth^2`. This is a linear,
+symmetric, zero-preload installation; use an installed effective rate when
+mount or link compliance matters.
+
+ARB motion ratios may exceed one. An enabled bar requires a strictly positive
+lever arm; a disabled bar may retain a zero placeholder. Nonfinite rates and
+invalid enable values are rejected. Configuration names and telemetry fields
+are unchanged.
+
+Warm starts solve the shared bar force together with both tire/spring corner
+equilibria, including the unilateral tire and bump-stop laws. Dynamic updates
+advance both wheels on shared substeps and refresh endpoint bar reactions.
+The optional `getMaxIntegrationStep()` capability bounds the anti-phase mode
+including `2*B`; vehicle callers should subcycle the complete chassis/suspension
+loop at this bound rather than advancing the chassis with frozen reactions.
+
+Chassis-state capabilities are cached by class, with live reflection for
+dynamic properties. State values, bar forces, and integration bounds remain
+live; the bound responds immediately to stiffness, effective motion ratio,
+unsprung mass, integration cap, and axle bar-rate changes.
+Private transient handle caches support the manager's value-class semantics
+without retaining component handles or sharing physical state between copies.

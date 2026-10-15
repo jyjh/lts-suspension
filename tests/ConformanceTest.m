@@ -103,6 +103,24 @@ verifyError(testCase, ...
     'lts_suspension_validateConfig:InvalidGeometry');
 end
 
+function testArbGeometryValidation(testCase)
+cfg = canonicalConfig();
+cfg.frontArb.leverArm = 0;
+verifyError(testCase, @() lts.components.Suspension.validateConfig(cfg), ...
+    'lts_suspension_validateConfig:InvalidScalar');
+cfg.frontArb.enabled = false;
+verifyTrue(testCase, lts.components.Suspension.validateConfig(cfg));
+cfg.frontArb.leverArm = .2;
+cfg.frontArb.enabled = true;
+cfg.frontArb.motionRatio = 2;
+verifyTrue(testCase, lts.components.Suspension.validateConfig(cfg));
+for value = {NaN, Inf, [true false], 2}
+    cfg.frontArb.enabled = value{1};
+    verifyError(testCase, @() lts.components.Suspension.validateConfig(cfg), ...
+        'lts_suspension_validateConfig:InvalidScalar');
+end
+end
+
 %% ---- 2. Interface (contract item 1) -------------------------------------
 
 function testManagerSubclassesSuspensionComponent(testCase)

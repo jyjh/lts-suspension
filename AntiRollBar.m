@@ -52,28 +52,53 @@ classdef AntiRollBar
             %   AntiRollBar(stiffness, motionRatio, leverArm, enabled)
             %   stiffness is torsional rate [N*m/rad].
             if nargin >= 1 && ~isempty(stiffness)
-                obj.stiffness = max(0, stiffness);
+                obj.stiffness = stiffness;
             end
             if nargin >= 2 && ~isempty(motionRatio)
-                obj.motionRatio = max(eps, motionRatio);
+                obj.motionRatio = motionRatio;
             end
             if nargin >= 3 && ~isempty(leverArm)
-                obj.leverArm = max(eps, leverArm);
+                obj.leverArm = leverArm;
             end
             if nargin >= 4 && ~isempty(enabled)
-                obj.enabled = logical(enabled);
+                obj.enabled = enabled;
             end
+            obj.validateParameters();
         end
 
         function kw = getWheelRateStiffness(obj)
             % GETWHEELRATESTIFFNESS Differential wheel-coupling rate [N/m].
             % This is the force at either wheel per left-right travel
             % difference. Zero when disabled or when stiffness is zero.
-            if ~obj.enabled || obj.stiffness <= 0
+            obj.validateParameters();
+            if ~obj.enabled || obj.stiffness == 0
                 kw = 0;
                 return;
             end
             kw = obj.stiffness * obj.motionRatio^2 / obj.leverArm^2;
+            if ~isfinite(kw)
+                error('lts_suspension_AntiRollBar:InvalidParameter', ...
+                    'ARB geometry produces a nonfinite wheel rate.');
+            end
+        end
+    end
+
+    methods (Access = private)
+        function validateParameters(obj)
+            validateattributes(obj.stiffness, {'numeric'}, ...
+                {'real', 'scalar', 'finite', 'nonnegative'});
+            validateattributes(obj.motionRatio, {'numeric'}, ...
+                {'real', 'scalar', 'finite', 'positive'});
+            validateattributes(obj.leverArm, {'numeric'}, ...
+                {'real', 'scalar', 'finite', 'nonnegative'});
+            if ~(islogical(obj.enabled) || isnumeric(obj.enabled)) || ...
+                    ~isreal(obj.enabled) || ~isscalar(obj.enabled) || ...
+                    ~isfinite(obj.enabled) || ...
+                    ~(obj.enabled == 0 || obj.enabled == 1) || ...
+                    (obj.enabled && obj.leverArm <= 0)
+                error('lts_suspension_AntiRollBar:InvalidParameter', ...
+                    'ARB enabled must be 0 or 1; an enabled bar needs a positive leverArm.');
+            end
         end
     end
 end
